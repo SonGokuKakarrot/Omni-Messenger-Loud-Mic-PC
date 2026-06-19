@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
-  "name": "Omni Messenger Lord",
-  "short_name": "MSG Lord",
-  "version": "3.0.0",
-  "description": "Facebook and Messenger browser-call microphone maximizer for Android extension browsers, with page-context WebRTC hooks, live DSP controls, and a polished control panel.",
+  "name": "Omni Messenger Lord V4",
+  "short_name": "Lord V4",
+  "version": "4.2.0",
+  "description": "Developed by Omni. 200000x Facebook and Messenger browser-call microphone maximizer for Android extension browsers with raw-mic WebRTC hooks and live DSP controls.",
   "permissions": [
     "storage",
     "tabs",
@@ -32,7 +32,7 @@
   ],
   "web_accessible_resources": ["core/injector.js"],
   "browser_action": {
-    "default_title": "Omni Messenger Lord",
+    "default_title": "Omni Messenger Lord V4",
     "default_popup": "popup/popup.html"
   },
   "browser_specific_settings": {

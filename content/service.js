@@ -4,8 +4,9 @@
 
   const HAS_PROMISE_API = typeof globalThis.browser !== 'undefined' && EXT === globalThis.browser;
   const DEFAULTS = {
+    profileVersion: 5,
     enabled: true,
-    gainDb: 84,
+    gainDb: 106.0206,
     thresholdDb: -60,
     knee: 40,
     ratio: 20,
@@ -15,13 +16,20 @@
     presenceDb: 20,
     highShelfDb: 16,
     limiterDb: -0.1,
-    drive: 1.8,
-    loudness: 20.0,
-    maxBoost: 5000,
+    drive: 1.2,
+    loudness: 1.0,
+    maxBoost: 200000,
     sustain: true,
-    sustainTargetDb: -2,
-    sustainMaxGain: 64,
-    forceRawMic: true
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
+    forceRawMic: true,
+    reverbEnabled: true,
+    reverbDelay: 0.045,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
+    keepAlive: true,
+    keepAliveGain: 0.00035,
+    senderRefreshMs: 500
   };
   const MSG_CFG = 'MIC_MAXIMIZER_CONFIG';
   let hookReady = false;
@@ -59,7 +67,7 @@
     try {
       const res = await storageGet('micMaximizerConfig');
       const stored = res.micMaximizerConfig || {};
-      if (stored.forceRawMic === undefined) return { ...DEFAULTS };
+      if (stored.profileVersion !== DEFAULTS.profileVersion) return { ...DEFAULTS };
       return { ...DEFAULTS, ...stored };
     } catch (_) {
       return { ...DEFAULTS };
