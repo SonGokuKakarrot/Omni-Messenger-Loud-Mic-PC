@@ -1,11 +1,12 @@
 const EXT = globalThis.browser ?? globalThis.chrome;
 const HAS_PROMISE_API = typeof globalThis.browser !== 'undefined' && EXT === globalThis.browser;
 const DEFAULTS = {
+  profileVersion: 5,
   enabled: true,
-  gainDb: 84,
-  loudness: 20.0,
-  maxBoost: 5000,
-  drive: 1.8,
+  gainDb: 106.0206,
+  loudness: 1.0,
+  maxBoost: 200000,
+  drive: 1.2,
   thresholdDb: -60,
   ratio: 20,
   limiterDb: -0.1,
@@ -13,12 +14,20 @@ const DEFAULTS = {
   lowShelfDb: 14,
   highShelfDb: 16,
   sustain: true,
-  sustainTargetDb: -2,
-  sustainMaxGain: 64,
-  forceRawMic: true
+  sustainTargetDb: 5,
+  sustainMaxGain: 120,
+  forceRawMic: true,
+  reverbEnabled: true,
+  reverbDelay: 0.045,
+  reverbFeedback: 0.35,
+  reverbWet: 0.18,
+  keepAlive: true,
+  keepAliveGain: 0.00035,
+  senderRefreshMs: 500
 };
 const PRESETS = {
   royal: {
+    profileVersion: 5,
     enabled: true,
     gainDb: 24,
     loudness: 4,
@@ -33,14 +42,22 @@ const PRESETS = {
     sustain: true,
     sustainTargetDb: -8,
     sustainMaxGain: 12,
-    forceRawMic: true
+    forceRawMic: true,
+    reverbEnabled: true,
+    reverbDelay: 0.035,
+    reverbFeedback: 0.18,
+    reverbWet: 0.08,
+    keepAlive: true,
+    keepAliveGain: 0.0002,
+    senderRefreshMs: 750
   },
   lord: {
+    profileVersion: 5,
     enabled: true,
-    gainDb: 84,
-    loudness: 20,
-    maxBoost: 5000,
-    drive: 1.8,
+    gainDb: 106.0206,
+    loudness: 1,
+    maxBoost: 200000,
+    drive: 1.2,
     thresholdDb: -60,
     ratio: 20,
     limiterDb: -0.1,
@@ -48,12 +65,19 @@ const PRESETS = {
     lowShelfDb: 14,
     highShelfDb: 16,
     sustain: true,
-    sustainTargetDb: -2,
-    sustainMaxGain: 64,
-    forceRawMic: true
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
+    forceRawMic: true,
+    reverbEnabled: true,
+    reverbDelay: 0.045,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
+    keepAlive: true,
+    keepAliveGain: 0.00035,
+    senderRefreshMs: 500
   }
 };
-const ids = Object.keys(DEFAULTS);
+const ids = Object.keys(DEFAULTS).filter((id) => id !== 'profileVersion');
 
 function storageGet(key) {
   if (HAS_PROMISE_API) return EXT.storage.local.get(key);
@@ -97,14 +121,21 @@ function sendMessage(message) {
 function numberText(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
-  return Math.abs(n) < 10 && !Number.isInteger(n) ? n.toFixed(1) : String(n);
+  if (Math.abs(n) > 0 && Math.abs(n) < 0.01) return n.toFixed(5);
+  if (Math.abs(n) < 1 && !Number.isInteger(n)) return n.toFixed(2);
+  return Math.abs(n) < 10 && !Number.isInteger(n) ? n.toFixed(1) : String(Math.round(n));
+}
+
+function multiplierFromGainDb(gainDb) {
+  return Math.round(Math.pow(10, Number(gainDb) / 20));
 }
 
 function updateLabels() {
   ids.forEach((id) => {
     const el = document.getElementById(id);
     const label = document.getElementById(`${id}Val`);
-    if (label && el?.type !== 'checkbox') label.textContent = numberText(el.value);
+    if (!label || el?.type === 'checkbox') return;
+    label.textContent = id === 'gainDb' ? `${numberText(el.value)} dB / ${multiplierFromGainDb(el.value)}x` : numberText(el.value);
   });
 }
 
@@ -143,7 +174,7 @@ function applyToControls(config) {
 async function readConfig() {
   const stored = await storageGet('micMaximizerConfig');
   const saved = stored.micMaximizerConfig || {};
-  if (saved.forceRawMic === undefined) return { ...DEFAULTS };
+  if (saved.profileVersion !== DEFAULTS.profileVersion) return { ...DEFAULTS };
   return { ...DEFAULTS, ...saved };
 }
 

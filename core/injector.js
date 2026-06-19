@@ -2,10 +2,11 @@
   if (window.__micMaxInjectorReady) return;
   window.__micMaxInjectorReady = true;
 
-  // Extreme profile based on Omni DC Lord, with clamps to keep controls recoverable.
+  // Omni Messenger Lord V4 extreme 200000x profile, with clamps to keep controls recoverable.
   const DEFAULTS = {
+    profileVersion: 5,
     enabled: true,
-    gainDb: 84,
+    gainDb: 106.0206,
     thresholdDb: -60,
     knee: 40,
     ratio: 20,
@@ -15,16 +16,23 @@
     presenceDb: 20,
     highShelfDb: 16,
     limiterDb: -0.1,
-    drive: 1.8,
-    loudness: 20.0,
-    maxBoost: 5000,
+    drive: 1.2,
+    loudness: 1.0,
+    maxBoost: 200000,
     sustain: true,
-    sustainTargetDb: -2,
-    sustainMaxGain: 64,
-    forceRawMic: true
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
+    forceRawMic: true,
+    reverbEnabled: true,
+    reverbDelay: 0.045,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
+    keepAlive: true,
+    keepAliveGain: 0.00035,
+    senderRefreshMs: 500
   };
   const MSG_CFG = 'MIC_MAXIMIZER_CONFIG';
-  const AUDIO_SEND_MAX_BITRATE = 510000;
+  const AUDIO_SEND_MAX_BITRATE = 512000;
   const state = {
     config: { ...DEFAULTS },
     origMD: null,
@@ -49,7 +57,7 @@
   function cfg(input = state.config) {
     const merged = { ...DEFAULTS, ...(input || {}) };
     merged.enabled = Boolean(merged.enabled);
-    merged.maxBoost = clamp(merged.maxBoost, 1, 5000);
+    merged.maxBoost = clamp(merged.maxBoost, 1, 200000);
     merged.loudness = clamp(merged.loudness, 0.5, merged.maxBoost);
     merged.gainDb = clamp(merged.gainDb, 0, 120);
     merged.drive = clamp(merged.drive, 0, 10);
@@ -65,9 +73,16 @@
     merged.highShelfDb = clamp(merged.highShelfDb, -60, 60);
     merged.limiterDb = clamp(merged.limiterDb, -24, 0);
     merged.sustain = Boolean(merged.sustain);
-    merged.sustainTargetDb = clamp(merged.sustainTargetDb, -24, -1);
-    merged.sustainMaxGain = clamp(merged.sustainMaxGain, 1, 64);
+    merged.sustainTargetDb = clamp(merged.sustainTargetDb, -24, 12);
+    merged.sustainMaxGain = clamp(merged.sustainMaxGain, 1, 160);
     merged.forceRawMic = Boolean(merged.forceRawMic);
+    merged.reverbEnabled = Boolean(merged.reverbEnabled);
+    merged.reverbDelay = clamp(merged.reverbDelay, 0.01, 0.35);
+    merged.reverbFeedback = clamp(merged.reverbFeedback, 0, 0.75);
+    merged.reverbWet = clamp(merged.reverbWet, 0, 0.6);
+    merged.keepAlive = Boolean(merged.keepAlive);
+    merged.keepAliveGain = clamp(merged.keepAliveGain, 0, 0.003);
+    merged.senderRefreshMs = clamp(merged.senderRefreshMs, 250, 1500);
     return merged;
   }
 
@@ -122,6 +137,10 @@
     setParam(nodes.loudness.gain, c.loudness, ctx);
     setParam(nodes.gain.gain, dbToLinear(c.gainDb), ctx);
     nodes.saturator.curve = makeSaturationCurve(c.drive);
+    if (nodes.reverbDelay) setParam(nodes.reverbDelay.delayTime, c.reverbDelay, ctx);
+    if (nodes.reverbFeedback) setParam(nodes.reverbFeedback.gain, c.reverbEnabled ? c.reverbFeedback : 0, ctx);
+    if (nodes.reverbWet) setParam(nodes.reverbWet.gain, c.reverbEnabled ? c.reverbWet : 0, ctx);
+    if (nodes.keepAliveGain) setParam(nodes.keepAliveGain.gain, c.keepAlive ? c.keepAliveGain : 0, ctx);
     if (nodes.sustain && !c.sustain) setParam(nodes.sustain.gain, 1, ctx);
     setParam(nodes.limiter.threshold, c.limiterDb, ctx);
   }
@@ -186,6 +205,19 @@
     }
   }
 
+  function createKeepAliveNoise(ctx) {
+    const length = Math.max(1, Math.floor(ctx.sampleRate * 2));
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i += 1) {
+      data[i] = (Math.random() * 2 - 1) * 0.35;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    return source;
+  }
+
   function build(stream, inputConfig) {
     const ctx = createAudioContext();
     if (!ctx || !stream.getAudioTracks().length) return stream;
@@ -225,6 +257,13 @@
     const sustain = ctx.createGain();
     sustain.gain.value = 1;
 
+    const reverbDelay = ctx.createDelay(0.5);
+    const reverbFeedback = ctx.createGain();
+    const reverbWet = ctx.createGain();
+    const keepAliveGain = ctx.createGain();
+    keepAliveGain.gain.value = 0;
+    const keepAliveSource = createKeepAliveNoise(ctx);
+
     const limiter = ctx.createDynamicsCompressor();
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
@@ -246,11 +285,24 @@
     loudness.connect(gain);
     gain.connect(saturator);
     saturator.connect(sustain);
+    saturator.connect(reverbDelay);
+    reverbDelay.connect(reverbFeedback);
+    reverbFeedback.connect(reverbDelay);
+    reverbDelay.connect(reverbWet);
+    reverbWet.connect(sustain);
     sustain.connect(limiter);
     limiter.connect(meter);
+    keepAliveSource.connect(keepAliveGain);
+    keepAliveGain.connect(meter);
     meter.connect(dst);
+    keepAliveSource.start(0);
 
-    const pipeline = { ctx, nodes: { low, pres, high, comp1, loudness, gain, saturator, sustain, limiter, meter }, sustainTimer: null };
+    const pipeline = {
+      ctx,
+      nodes: { low, pres, high, comp1, loudness, gain, saturator, sustain, reverbDelay, reverbFeedback, reverbWet, keepAliveGain, limiter, meter },
+      keepAliveSource,
+      sustainTimer: null
+    };
     applyPipeline(pipeline, inputConfig);
     state.pipelines.add(pipeline);
     startSustainController(pipeline);
@@ -271,36 +323,57 @@
       state.pipelines.delete(pipeline);
       if (pipeline.sustainTimer) clearInterval(pipeline.sustainTimer);
       stream.getAudioTracks().forEach((track) => state.sourceTracks.delete(track));
+      try { pipeline.keepAliveSource?.stop(); } catch (_) {}
       try { ctx.close(); } catch (_) {}
     };
-    stream.getTracks().forEach((track) => track.addEventListener('ended', stop, { once: true }));
+    outAudioTracks.forEach((track) => track.addEventListener('ended', stop, { once: true }));
+    stream.getTracks().forEach((track) => track.addEventListener('ended', scheduleRecoveryPasses, { once: true }));
     return out;
   }
 
   function rawMicAudioConstraints(audio = {}) {
     const base = audio && typeof audio === 'object' ? audio : {};
-    return {
-      ...base,
+    const processingOff = {
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
-      googAutoGainControl: false,
-      googNoiseSuppression: false,
-      googHighpassFilter: false,
       googEchoCancellation: false,
       googEchoCancellation2: false,
+      googEchoCancellation3: false,
       googDAEchoCancellation: false,
+      googExperimentalEchoCancellation: false,
+      googAutoGainControl: false,
+      googAutoGainControl2: false,
+      googNoiseSuppression: false,
+      googNoiseSuppression2: false,
+      googExperimentalNoiseSuppression: false,
+      googHighpassFilter: false,
       googTypingNoiseDetection: false,
       googAudioMirroring: false,
-      channelCount: { ideal: 1 },
+      googBeamforming: false,
+      mozAutoGainControl: false,
+      mozNoiseSuppression: false
+    };
+    return {
+      ...base,
+      ...processingOff,
+      channelCount: { ideal: 1, max: 1 },
       sampleRate: { ideal: 48000 },
-      sampleSize: { ideal: 16 }
+      sampleSize: { ideal: 16 },
+      advanced: [
+        ...(Array.isArray(base.advanced) ? base.advanced : []),
+        processingOff,
+        { channelCount: 1 },
+        { sampleRate: 48000 },
+        { sampleSize: 16 }
+      ]
     };
   }
 
   function enforceRawMicTrack(track) {
     if (!track || track.kind !== 'audio' || !cfg().forceRawMic) return;
     state.sourceTracks.add(track);
+    try { track.enabled = true; } catch (_) {}
     try { track.contentHint = 'speech'; } catch (_) {}
     if (typeof track.applyConstraints === 'function') {
       try { track.applyConstraints(rawMicAudioConstraints()).catch(() => {}); } catch (_) {}
@@ -360,12 +433,13 @@
     const meta = state.processedMeta.get(track);
     if (!meta) return true;
     resumePipeline(meta.pipeline);
-    return Boolean(liveAudioTrack(meta.source));
+    const sourceTrack = liveAudioTrack(meta.source);
+    return Boolean(sourceTrack && sourceTrack.enabled !== false && !sourceTrack.muted);
   }
 
   function trackNeedsRefresh(track) {
     if (!track || track.kind !== 'audio') return true;
-    if (track.readyState === 'ended') return true;
+    if (track.readyState === 'ended' || track.muted || track.enabled === false) return true;
     if (!state.processedTracks.has(track)) return true;
     return !processedSourceIsLive(track);
   }
@@ -420,6 +494,31 @@
       }, { once: true });
     }
     return forSender ? cloneForSender(processedTrack) : processedTrack;
+  }
+
+
+  function enhanceAudioSdp(sdp) {
+    if (typeof sdp !== 'string' || !sdp.includes('m=audio')) return sdp;
+    let next = sdp;
+    next = next.replace(/a=fmtp:111 ([^\r\n]*)/g, (line, params) => {
+      const additions = ['maxaveragebitrate=512000', 'stereo=0', 'sprop-stereo=0', 'useinbandfec=1', 'usedtx=0'];
+      const merged = params || '';
+      const suffix = additions.filter((item) => !new RegExp(`(^|;)\\s*${item.split('=')[0]}=`, 'i').test(merged));
+      return suffix.length ? `${line};${suffix.join(';')}` : line;
+    });
+    next = next.replace(/b=AS:\d+/g, 'b=AS:512').replace(/b=TIAS:\d+/g, 'b=TIAS:512000');
+    if (!/b=AS:512/.test(next)) next = next.replace(/(m=audio[^\r\n]*(?:\r?\n)c=IN[^\r\n]*)/, '$1\r\nb=AS:512');
+    if (!/b=TIAS:512000/.test(next)) next = next.replace(/(b=AS:512)/, '$1\r\nb=TIAS:512000');
+    return next;
+  }
+
+  function cloneDescriptionWithSdp(desc, sdp) {
+    if (!desc || typeof desc !== 'object' || !sdp || sdp === desc.sdp) return desc;
+    try {
+      return new RTCSessionDescription({ type: desc.type, sdp });
+    } catch (_) {
+      try { return { ...desc, sdp }; } catch (_) { return desc; }
+    }
   }
 
   function tuneAudioSender(sender) {
@@ -522,6 +621,8 @@
     if (!state.processedTracks.has(track) || state.senderWatchTracks.has(track)) return;
     state.senderWatchTracks.add(track);
     track.addEventListener('ended', () => queueSenderRefresh(sender, track), { once: true });
+    track.addEventListener('mute', () => setTimeout(() => queueSenderRefresh(sender, track), 120), { passive: true });
+    track.addEventListener('unmute', () => tuneAudioSender(sender), { passive: true });
   }
 
   function scheduleRecoveryPasses() {
@@ -606,6 +707,42 @@
           return originalAddTransceiver.call(this, trackOrKind, init);
         };
       }
+      const originalCreateOffer = PC.prototype.createOffer;
+      if (typeof originalCreateOffer === 'function') {
+        PC.prototype.createOffer = function createOffer(...args) {
+          rememberPeerConnection(this);
+          return originalCreateOffer.apply(this, args).then((offer) => cloneDescriptionWithSdp(offer, enhanceAudioSdp(offer?.sdp)));
+        };
+      }
+
+      const originalCreateAnswer = PC.prototype.createAnswer;
+      if (typeof originalCreateAnswer === 'function') {
+        PC.prototype.createAnswer = function createAnswer(...args) {
+          rememberPeerConnection(this);
+          return originalCreateAnswer.apply(this, args).then((answer) => cloneDescriptionWithSdp(answer, enhanceAudioSdp(answer?.sdp)));
+        };
+      }
+
+      const originalSetLocalDescription = PC.prototype.setLocalDescription;
+      if (typeof originalSetLocalDescription === 'function') {
+        PC.prototype.setLocalDescription = function setLocalDescription(desc) {
+          rememberPeerConnection(this);
+          const patched = cloneDescriptionWithSdp(desc, enhanceAudioSdp(desc?.sdp));
+          return originalSetLocalDescription.call(this, patched);
+        };
+      }
+
+      const originalSetRemoteDescription = PC.prototype.setRemoteDescription;
+      if (typeof originalSetRemoteDescription === 'function') {
+        PC.prototype.setRemoteDescription = function setRemoteDescription(desc) {
+          rememberPeerConnection(this);
+          const patched = cloneDescriptionWithSdp(desc, enhanceAudioSdp(desc?.sdp));
+          const result = originalSetRemoteDescription.call(this, patched);
+          Promise.resolve(result).then(scheduleRecoveryPasses).catch(() => {});
+          return result;
+        };
+      }
+
       PC.prototype.__micMaxPcPatched = true;
     }
 
@@ -682,6 +819,6 @@
     enforceAllSourceConstraints();
     resumeAllPipelines();
     reconcileLiveSenders();
-  }, 1000);
+  }, cfg().senderRefreshMs);
   window.postMessage({ type: 'MIC_MAXIMIZER_READY' }, '*');
 })();
