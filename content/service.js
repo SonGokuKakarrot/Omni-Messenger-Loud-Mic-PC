@@ -4,31 +4,31 @@
 
   const HAS_PROMISE_API = typeof globalThis.browser !== 'undefined' && EXT === globalThis.browser;
   const DEFAULTS = {
-    profileVersion: 6,
+    profileVersion: 7,
     enabled: true,
-    gainDb: 48,
-    thresholdDb: -42,
+    gainDb: 106.0206,
+    thresholdDb: -60,
     knee: 40,
     ratio: 20,
     attack: 0.0001,
     release: 0.03,
-    lowShelfDb: 6,
-    presenceDb: 10,
-    highShelfDb: 8,
-    limiterDb: -1,
-    drive: 0.65,
-    loudness: 4,
-    maxBoost: 32768,
+    lowShelfDb: 14,
+    presenceDb: 24,
+    highShelfDb: 18,
+    limiterDb: -0.1,
+    drive: 1.5,
+    loudness: 1.0,
+    maxBoost: 200000,
     sustain: true,
-    sustainTargetDb: -6,
-    sustainMaxGain: 32,
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
     forceRawMic: true,
-    reverbEnabled: false,
+    reverbEnabled: true,
     reverbDelay: 0.045,
-    reverbFeedback: 0.12,
-    reverbWet: 0.04,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
     keepAlive: true,
-    keepAliveGain: 0.00012,
+    keepAliveGain: 0.0012,
     senderRefreshMs: 1000
   };
   const MSG_CFG = 'MIC_MAXIMIZER_CONFIG';
@@ -93,11 +93,20 @@
 
   EXT.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.micMaximizerConfig) {
-      pushConfig({ ...DEFAULTS, ...(changes.micMaximizerConfig.newValue || {}) });
+      sync();
     }
   });
 
-  setInterval(sync, 3500);
-  setInterval(heartbeat, 5000);
-  sync();
+  // Periodic sync and heartbeat
+  setInterval(() => {
+    if (hookReady) {
+      sync();
+      heartbeat();
+    }
+  }, 8000);
+
+  // Initial sync attempt
+  setTimeout(sync, 1500);
+
+  console.log('[Omni Messenger Lord V4] content service loaded');
 })();
