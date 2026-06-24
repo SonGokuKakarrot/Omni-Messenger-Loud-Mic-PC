@@ -2,33 +2,33 @@
   if (window.__micMaxInjectorReady) return;
   window.__micMaxInjectorReady = true;
 
-  // Desktop-safe loud profile: high output with hard gain caps to prevent browser/GPU glitches.
+  // Omni Messenger Lord V4 extreme 200000x profile, with clamps to keep controls recoverable.
   const DEFAULTS = {
-    profileVersion: 6,
+    profileVersion: 7,
     enabled: true,
-    gainDb: 48,
-    thresholdDb: -42,
+    gainDb: 106.0206,
+    thresholdDb: -60,
     knee: 40,
     ratio: 20,
     attack: 0.0001,
     release: 0.03,
-    lowShelfDb: 6,
-    presenceDb: 10,
-    highShelfDb: 8,
-    limiterDb: -1,
-    drive: 0.65,
-    loudness: 4,
-    maxBoost: 32768,
+    lowShelfDb: 14,
+    presenceDb: 24,
+    highShelfDb: 18,
+    limiterDb: -0.1,
+    drive: 1.5,
+    loudness: 1.0,
+    maxBoost: 200000,
     sustain: true,
-    sustainTargetDb: -6,
-    sustainMaxGain: 32,
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
     forceRawMic: true,
-    reverbEnabled: false,
+    reverbEnabled: true,
     reverbDelay: 0.045,
-    reverbFeedback: 0.12,
-    reverbWet: 0.04,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
     keepAlive: true,
-    keepAliveGain: 0.00012,
+    keepAliveGain: 0.0012,
     senderRefreshMs: 1000
   };
   const MSG_CFG = 'MIC_MAXIMIZER_CONFIG';
@@ -57,14 +57,14 @@
   function cfg(input = state.config) {
     const merged = { ...DEFAULTS, ...(input || {}) };
     merged.enabled = Boolean(merged.enabled);
-    merged.maxBoost = clamp(merged.maxBoost, 1, 32768);
+    merged.maxBoost = clamp(merged.maxBoost, 1, 200000);
     merged.loudness = clamp(merged.loudness, 0.5, merged.maxBoost);
-    merged.gainDb = clamp(merged.gainDb, 0, 90);
+    merged.gainDb = clamp(merged.gainDb, 0, 120);
     merged.drive = clamp(merged.drive, 0, 10);
     merged.thresholdDb = clamp(merged.thresholdDb, -100, 0);
     merged.knee = clamp(merged.knee, 0, 40);
     // DynamicsCompressorNode.ratio has a nominal browser range of [1, 20].
-    // Values above 20 trigger Chromium extension errors/warnings at setTargetAtTime.
+    // Values above 20 trigger Quetta/Chromium extension errors/warnings at setTargetAtTime.
     merged.ratio = clamp(merged.ratio, 1, 20);
     merged.attack = clamp(merged.attack, 0.0001, 1);
     merged.release = clamp(merged.release, 0.01, 1);
@@ -82,18 +82,24 @@
     merged.reverbWet = clamp(merged.reverbWet, 0, 0.6);
     merged.keepAlive = Boolean(merged.keepAlive);
     merged.keepAliveGain = clamp(merged.keepAliveGain, 0, 0.003);
-    merged.senderRefreshMs = clamp(merged.senderRefreshMs, 250, 1500);
+    merged.senderRefreshMs = clamp(merged.senderRefreshMs, 750, 5000);
     return merged;
   }
 
+    const saturationCurveCache = new Map();
+
   function makeSaturationCurve(amount = 0.5) {
-    const k = Math.max(0.0001, amount * 100);
-    const n = 4096;
+       const normalized = Math.round(clamp(amount, 0, 10) * 100) / 100;
+    if (saturationCurveCache.has(normalized)) return saturationCurveCache.get(normalized);
+    const k = Math.max(0.0001, normalized * 100);
+    const n = 2048;
     const curve = new Float32Array(n);
     for (let i = 0; i < n; i += 1) {
-      const x = (i * 2) / n - 1;
+      const x = (i * 2) / (n - 1) - 1;
       curve[i] = ((Math.PI + k) * x) / (Math.PI + k * Math.abs(x));
     }
+        saturationCurveCache.set(normalized, curve);
+    if (saturationCurveCache.size > 64) saturationCurveCache.delete(saturationCurveCache.keys().next().value);
     return curve;
   }
 
@@ -110,8 +116,8 @@
     }
   }
 
-  function applyPipeline(pipeline, inputConfig = state.config) {
-    const raw = cfg(inputConfig);
+  function applyPipeline(pipeline, raw) {
+    if (!pipeline || !raw) return;
     const c = raw.enabled ? raw : {
       ...raw,
       lowShelfDb: 0,
@@ -134,10 +140,8 @@
     setParam(nodes.comp1.ratio, c.ratio, ctx);
     setParam(nodes.comp1.attack, c.attack, ctx);
     setParam(nodes.comp1.release, c.release, ctx);
-    const loudnessGain = Math.min(c.loudness, c.maxBoost);
-    const makeupGain = Math.min(dbToLinear(c.gainDb), Math.max(1, c.maxBoost / Math.max(1, loudnessGain)));
-    setParam(nodes.loudness.gain, loudnessGain, ctx);
-    setParam(nodes.gain.gain, makeupGain, ctx);
+    setParam(nodes.loudness.gain, c.loudness, ctx);
+    setParam(nodes.gain.gain, dbToLinear(c.gainDb), ctx);
     nodes.saturator.curve = makeSaturationCurve(c.drive);
     if (nodes.reverbDelay) setParam(nodes.reverbDelay.delayTime, c.reverbDelay, ctx);
     if (nodes.reverbFeedback) setParam(nodes.reverbFeedback.gain, c.reverbEnabled ? c.reverbFeedback : 0, ctx);
@@ -169,32 +173,31 @@
       sum += sample * sample;
     }
     const rms = Math.sqrt(sum / buffer.length);
-    return 20 * Math.log10(Math.max(rms, 0.000001));
+    return 20 * Math.log10(Math.max(rms, 0.00001));
   }
 
   function startSustainController(pipeline) {
+    if (!pipeline || pipeline.sustainTimer) return;
     const { ctx, nodes } = pipeline;
-    if (!nodes.meter || !nodes.sustain) return;
     const buffer = new Uint8Array(nodes.meter.fftSize);
     let currentGain = 1;
     pipeline.sustainTimer = setInterval(() => {
-      const c = cfg();
-      if (!c.enabled || !c.sustain || ctx.state === 'closed') {
+      const c = cfg(state.config);
+      if (!c.sustain || !nodes.sustain || ctx.state === 'closed') {
         currentGain = 1;
         setParam(nodes.sustain.gain, 1, ctx);
         return;
       }
-      resumePipeline(pipeline);
       const db = rmsDbFromAnalyser(nodes.meter, buffer);
       const target = c.sustainTargetDb;
       if (db < target) {
-        const lift = 1 + Math.min(1.2, Math.max(0.02, (target - db) * 0.035));
+        const lift = 1 + Math.min(0.55, Math.max(0.01, (target - db) * 0.018));
         currentGain = Math.min(c.sustainMaxGain, currentGain * lift);
       } else {
-        currentGain = Math.max(1, currentGain * 0.82);
+        currentGain = Math.max(1, currentGain * 0.88);
       }
       setParam(nodes.sustain.gain, currentGain, ctx);
-    }, 200);
+    }, 250);
   }
 
   function createAudioContext() {
@@ -255,7 +258,7 @@
     const loudness = ctx.createGain();
     const gain = ctx.createGain();
     const saturator = ctx.createWaveShaper();
-    saturator.oversample = '4x';
+    saturator.oversample = '2x';
     const sustain = ctx.createGain();
     sustain.gain.value = 1;
 
@@ -321,7 +324,10 @@
       ...stream.getTracks().filter((track) => track.kind !== 'audio')
     ]);
 
+       let stopped = false;
     const stop = () => {
+            if (stopped) return;
+      stopped = true;
       state.pipelines.delete(pipeline);
       if (pipeline.sustainTimer) clearInterval(pipeline.sustainTimer);
       stream.getAudioTracks().forEach((track) => state.sourceTracks.delete(track));
@@ -335,22 +341,43 @@
 
   function rawMicAudioConstraints(audio = {}) {
     const base = audio && typeof audio === 'object' ? audio : {};
-    return {
-      ...base,
+    const processingOff = {
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
-      googAutoGainControl: false,
-      googNoiseSuppression: false,
-      googHighpassFilter: false,
       googEchoCancellation: false,
       googEchoCancellation2: false,
+      googEchoCancellation3: false,
       googDAEchoCancellation: false,
+      googExperimentalEchoCancellation: false,
+      googHybridEchoCancellation: false,
+      googHybridAec: false,
+      googEchoCancellationHybrid: false,
+      googAutoGainControl: false,
+      googAutoGainControl2: false,
+      googNoiseSuppression: false,
+      googNoiseSuppression2: false,
+      googExperimentalNoiseSuppression: false,
+      googHighpassFilter: false,
       googTypingNoiseDetection: false,
       googAudioMirroring: false,
-      channelCount: { ideal: 1 },
+      googBeamforming: false,
+      mozAutoGainControl: false,
+      mozNoiseSuppression: false
+    };
+    return {
+      ...base,
+      ...processingOff,
+      channelCount: { ideal: 1, max: 1 },
       sampleRate: { ideal: 48000 },
-      sampleSize: { ideal: 16 }
+      sampleSize: { ideal: 16 },
+      advanced: [
+        ...(Array.isArray(base.advanced) ? base.advanced : []),
+        processingOff,
+        { channelCount: 1 },
+        { sampleRate: 48000 },
+        { sampleSize: 16 }
+      ]
     };
   }
 
@@ -388,11 +415,9 @@
   }
 
   function normalizeConstraints(constraints) {
-    if (constraints === true) constraints = { audio: true };
-    if (!constraints || typeof constraints !== 'object') return constraints;
+    if (!constraints) return { audio: true };
     const next = { ...constraints };
-    if (next.audio === true) next.audio = {};
-    if (typeof next.audio === 'object') next.audio = rawMicAudioConstraints(next.audio);
+    if (cfg().forceRawMic && typeof next.audio === 'object') next.audio = rawMicAudioConstraints(next.audio);
     return next;
   }
 
@@ -480,7 +505,6 @@
     return forSender ? cloneForSender(processedTrack) : processedTrack;
   }
 
-
   function enhanceAudioSdp(sdp) {
     if (typeof sdp !== 'string' || !sdp.includes('m=audio')) return sdp;
     let next = sdp;
@@ -536,11 +560,15 @@
     if (!sender) return null;
     let record = state.senderBySender.get(sender);
     if (!record) {
-      record = { sender, track: null, pc: null };
+      record = { sender, track: null, pc: null, kind: null };
       state.senderBySender.set(sender, record);
       state.senderRecords.add(record);
     }
-    if (track) record.track = track;
+    if (track) {
+      record.track = track;
+      record.kind = track.kind;
+    }
+    if (!record.kind && sender.track?.kind) record.kind = sender.track.kind;
     if (pc) record.pc = pc;
     return record;
   }
@@ -566,20 +594,9 @@
 
   async function replaceSenderTrack(sender, track) {
     if (!sender || typeof sender.replaceTrack !== 'function') return null;
-    rememberSender(sender, track);
-    const current = track || sender.track;
-    let replacement = null;
-
-    if (current && current.kind === 'audio' && !trackNeedsRefresh(current)) {
-      replacement = current;
-    } else if (current && current.kind === 'audio' && current.readyState !== 'ended' && !state.processedTracks.has(current)) {
-      replacement = processAudioTrack(current, true);
-    }
-
-    if (!replacement || trackNeedsRefresh(replacement)) replacement = await reacquireProcessedTrackForSender();
-    if (!replacement || replacement.readyState === 'ended') return null;
-
     try {
+      const replacement = track?.readyState === 'ended' ? await reacquireProcessedTrackForSender() : processAudioTrack(track, true);
+      if (!replacement) return null;
       await sender.replaceTrack(replacement);
       tuneAudioSender(sender);
       rememberSender(sender, replacement);
@@ -626,13 +643,27 @@
     if (!cfg().enabled) return;
     resumeAllPipelines();
     for (const pc of [...state.peerConnections]) {
-      if (typeof pc.getSenders !== 'function') continue;
-      try {
-        for (const sender of pc.getSenders()) {
-          const track = sender?.track;
-          if (track?.kind === 'audio') rememberSender(sender, track);
-        }
-      } catch (_) {}
+      if (typeof pc.getSenders === 'function') {
+        try {
+          for (const sender of pc.getSenders()) {
+            const track = sender?.track;
+            if (track?.kind === 'audio') rememberSender(sender, track, pc);
+          }
+        } catch (_) {}
+      }
+      if (typeof pc.getTransceivers === 'function') {
+        try {
+          for (const transceiver of pc.getTransceivers()) {
+            const sender = transceiver?.sender;
+            const receiverTrack = transceiver?.receiver?.track;
+            const midLooksAudio = String(transceiver?.mid || '').toLowerCase().includes('audio');
+            if (sender && (sender.track?.kind === 'audio' || receiverTrack?.kind === 'audio' || midLooksAudio)) {
+              const record = rememberSender(sender, sender.track || null, pc);
+              if (record) record.kind = 'audio';
+            }
+          }
+        } catch (_) {}
+      }
     }
 
     for (const record of [...state.senderRecords]) {
@@ -642,8 +673,9 @@
       }
       const sender = record.sender;
       const track = sender?.track || record.track;
-      if (!sender || !track || track.kind !== 'audio') continue;
-      if (trackNeedsRefresh(track)) queueSenderRefresh(sender, track);
+      const isAudioRecord = track?.kind === 'audio' || record.kind === 'audio';
+      if (!sender || !isAudioRecord) continue;
+      if (!track || trackNeedsRefresh(track)) queueSenderRefresh(sender, track);
       else {
         tuneAudioSender(sender);
         watchSenderTrack(sender, track);
@@ -673,6 +705,18 @@
         };
       }
 
+      const originalAddStream = PC.prototype.addStream;
+      if (typeof originalAddStream === 'function') {
+        PC.prototype.addStream = function addStream(stream) {
+          rememberPeerConnection(this);
+          if (cfg().enabled && stream?.getAudioTracks?.().length) {
+            const processedStream = build(stream, state.config);
+            return originalAddStream.call(this, processedStream);
+          }
+          return originalAddStream.call(this, stream);
+        };
+      }
+
       const originalAddTransceiver = PC.prototype.addTransceiver;
       if (typeof originalAddTransceiver === 'function') {
         PC.prototype.addTransceiver = function addTransceiver(trackOrKind, init = undefined) {
@@ -688,9 +732,17 @@
             if (typeof transceiver?.sender?.replaceTrack === 'function') watchSenderTrack(transceiver.sender, processedTrack);
             return transceiver;
           }
-          return originalAddTransceiver.call(this, trackOrKind, init);
+          const transceiver = originalAddTransceiver.call(this, trackOrKind, init);
+          if (cfg().enabled && trackOrKind === 'audio') {
+            const record = rememberSender(transceiver?.sender, transceiver?.sender?.track || null, this);
+            if (record) record.kind = 'audio';
+            tuneAudioSender(transceiver?.sender);
+            setTimeout(() => queueSenderRefresh(transceiver?.sender, transceiver?.sender?.track || null), 0);
+          }
+          return transceiver;
         };
       }
+
       const originalCreateOffer = PC.prototype.createOffer;
       if (typeof originalCreateOffer === 'function') {
         PC.prototype.createOffer = function createOffer(...args) {
@@ -735,7 +787,14 @@
       const originalReplaceTrack = Sender.prototype.replaceTrack;
       if (typeof originalReplaceTrack === 'function') {
         Sender.prototype.replaceTrack = function replaceTrack(track) {
-          const nextTrack = cfg().enabled && track?.kind === 'audio' ? processAudioTrack(track, true) : track;
+          const currentKind = this.track?.kind;
+          const shouldProcess = cfg().enabled && (track?.kind === 'audio' || (!track && currentKind === 'audio'));
+          if (shouldProcess && !track) {
+            const record = rememberSender(this, this.track || null);
+            if (record) record.kind = 'audio';
+            queueSenderRefresh(this, this.track || null);
+          }
+          const nextTrack = shouldProcess && track?.kind === 'audio' ? processAudioTrack(track, true) : track;
           const result = originalReplaceTrack.call(this, nextTrack);
           if (nextTrack?.kind === 'audio') {
             rememberSender(this, nextTrack);
@@ -761,21 +820,19 @@
 
   async function wrapped(orig, constraints, ctx) {
     if (wantsAudio(constraints)) state.lastAudioConstraints = constraints || { audio: true };
-    const stream = await getStreamWithFallback(orig, constraints, ctx);
-    if (!cfg().enabled || !wantsAudio(constraints)) return stream;
-    try {
+    if (!cfg().enabled) return orig.call(ctx, constraints);
+    return getStreamWithFallback(orig, constraints, ctx).then((stream) => {
+      if (!stream || !stream.getAudioTracks().length) return stream;
       return build(stream, state.config);
-    } catch (_) {
-      return stream;
-    }
+    });
   }
 
-  patchPeerConnectionPaths();
-  patchTrackConstraints();
-
+  // Main hooks
   if (navigator.mediaDevices?.getUserMedia) {
     state.origMD = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-    navigator.mediaDevices.getUserMedia = (constraints) => wrapped(state.origMD, constraints, navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = function getUserMedia(constraints) {
+      return wrapped(state.origMD, constraints, navigator.mediaDevices);
+    };
   }
 
   if (navigator.getUserMedia) {
@@ -789,6 +846,7 @@
     if (event.source !== window || !event.data || event.data.type !== MSG_CFG) return;
     state.config = cfg(event.data.payload);
     updateAllPipelines(state.config);
+        restartMaintenanceLoop();
     scheduleRecoveryPasses();
   });
 
@@ -799,10 +857,15 @@
     if (!document.hidden) scheduleRecoveryPasses();
   });
 
-  setInterval(() => {
-    enforceAllSourceConstraints();
-    resumeAllPipelines();
-    reconcileLiveSenders();
-  }, cfg().senderRefreshMs);
+  let maintenanceInterval = null;
+  function restartMaintenanceLoop() {
+    if (maintenanceInterval) clearInterval(maintenanceInterval);
+    maintenanceInterval = setInterval(() => {
+      enforceAllSourceConstraints();
+      resumeAllPipelines();
+      reconcileLiveSenders();
+    }, cfg(state.config).senderRefreshMs);
+  }
+  restartMaintenanceLoop();
   window.postMessage({ type: 'MIC_MAXIMIZER_READY' }, '*');
 })();
