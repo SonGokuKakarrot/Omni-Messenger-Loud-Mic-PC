@@ -1,4 +1,4 @@
-// Omni Messenger Loud Mic V4 Ultra Pro background module.
+// Omni Messenger Lord V4 background module.
 // Local diagnostics only: no remote fetches, no webhooks, no token/session reads.
 
 const EXT = globalThis.browser ?? globalThis.chrome;
@@ -10,7 +10,7 @@ function reply(sendResponse, payload) {
 
 if (EXT?.runtime?.onInstalled) {
   EXT.runtime.onInstalled.addListener(() => {
-    console.log('[Omni Messenger Loud Mic V4 Ultra Pro] installed');
+    console.log('[Omni Messenger Lord V4] installed');
   });
 }
 
@@ -36,8 +36,8 @@ if (EXT?.runtime?.onMessage) {
     }
 
     if (message.type === 'MICMAX_RESET_STATUS') {
-      state.hookActiveTabs.clear();
       state.lastHeartbeat = 0;
+      state.hookActiveTabs.clear();
       reply(sendResponse, { ok: true });
       return false;
     }
@@ -45,3 +45,17 @@ if (EXT?.runtime?.onMessage) {
     return false;
   });
 }
+
+// Optional: clean up inactive tabs
+setInterval(() => {
+  if (EXT?.tabs?.query) {
+    EXT.tabs.query({ status: 'complete' }, (tabs) => {
+      const activeIds = new Set(tabs.map(t => t.id));
+      for (const id of state.hookActiveTabs) {
+        if (!activeIds.has(id)) state.hookActiveTabs.delete(id);
+      }
+    });
+  }
+}, 30000);
+
+console.log('[Omni Messenger Lord V4] background service started');
