@@ -3,6 +3,7 @@
   if (!EXT?.runtime?.getURL) return;
 
   const injectorUrl = EXT.runtime.getURL('core/injector.js');
+  const SCRIPT_ID = 'omni-messenger-loud-mic-injector';
 
   function sendHeartbeat() {
     try {
@@ -12,41 +13,30 @@
   }
 
   function inject() {
-    if (window.__micMaxLoaderBusy) return;
-    window.__micMaxLoaderBusy = true;
-
-    const alreadyInjected = document.documentElement?.dataset?.micMaxLoaderInjected === '1';
-    if (alreadyInjected && window.__micMaxInjectorReady) {
-      window.__micMaxLoaderBusy = false;
+    if (window.__micMaxInjectorReady || document.getElementById(SCRIPT_ID)) {
       sendHeartbeat();
       return;
     }
-
+    const root = document.documentElement || document.head;
+    if (!root) return;
     const script = document.createElement('script');
+    script.id = SCRIPT_ID;
     script.src = injectorUrl;
     script.async = false;
-    script.dataset.omniMessengerLord = 'injector';
+    script.dataset.omniMessengerLoudMic = 'injector';
     script.onload = () => {
       document.documentElement.dataset.micMaxLoaderInjected = '1';
-      window.__micMaxLoaderBusy = false;
       sendHeartbeat();
       script.remove();
     };
-    script.onerror = () => {
-      window.__micMaxLoaderBusy = false;
-      script.remove();
-    };
-    (document.head || document.documentElement).appendChild(script);
+    script.onerror = () => script.remove();
+    (document.head || root).appendChild(script);
   }
 
   inject();
-
-  const observer = new MutationObserver(() => {
-    if (!window.__micMaxInjectorReady) inject();
+  window.addEventListener('message', (event) => {
+    if (event.source === window && event.data?.type === 'MIC_MAXIMIZER_READY') sendHeartbeat();
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-
-  setInterval(() => {
-    if (!window.__micMaxInjectorReady) inject();
-  }, 2500);
+  document.addEventListener('DOMContentLoaded', inject, { once: true });
+  setTimeout(inject, 1200);
 })();
