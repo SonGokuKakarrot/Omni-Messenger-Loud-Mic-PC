@@ -1,4 +1,4 @@
-# Omni Messenger Loud Mic V4 Ultra Pro
+# Omni Messenger Loud Mic V4 PC
 
 **Developed by Omni**
 
