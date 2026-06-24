@@ -1,33 +1,35 @@
 const EXT = globalThis.browser ?? globalThis.chrome;
 const HAS_PROMISE_API = typeof globalThis.browser !== 'undefined' && EXT === globalThis.browser;
+
 const DEFAULTS = {
-  profileVersion: 6,
+  profileVersion: 7,
   enabled: true,
-  gainDb: 48,
-  loudness: 4,
-  maxBoost: 32768,
-  drive: 0.65,
-  thresholdDb: -42,
+  gainDb: 106.0206,
+  loudness: 1.0,
+  maxBoost: 200000,
+  drive: 1.5,
+  thresholdDb: -60,
   ratio: 20,
-  limiterDb: -1,
-  presenceDb: 10,
-  lowShelfDb: 6,
-  highShelfDb: 8,
+  limiterDb: -0.1,
+  presenceDb: 24,
+  lowShelfDb: 14,
+  highShelfDb: 18,
   sustain: true,
-  sustainTargetDb: -6,
-  sustainMaxGain: 32,
+  sustainTargetDb: 5,
+  sustainMaxGain: 120,
   forceRawMic: true,
-  reverbEnabled: false,
+  reverbEnabled: true,
   reverbDelay: 0.045,
-  reverbFeedback: 0.12,
-  reverbWet: 0.04,
+  reverbFeedback: 0.35,
+  reverbWet: 0.18,
   keepAlive: true,
-  keepAliveGain: 0.00012,
+  keepAliveGain: 0.0012,
   senderRefreshMs: 1000
 };
+
 const PRESETS = {
   royal: {
-    profileVersion: 6,
+    profileVersion: 7,
     enabled: true,
     gainDb: 24,
     loudness: 4,
@@ -43,7 +45,7 @@ const PRESETS = {
     sustainTargetDb: -8,
     sustainMaxGain: 12,
     forceRawMic: true,
-    reverbEnabled: false,
+    reverbEnabled: true,
     reverbDelay: 0.035,
     reverbFeedback: 0.18,
     reverbWet: 0.08,
@@ -52,31 +54,32 @@ const PRESETS = {
     senderRefreshMs: 750
   },
   lord: {
-    profileVersion: 6,
+    profileVersion: 7,
     enabled: true,
-    gainDb: 48,
-    loudness: 4,
-    maxBoost: 32768,
-    drive: 0.65,
-    thresholdDb: -42,
+    gainDb: 106.0206,
+    loudness: 1,
+    maxBoost: 200000,
+    drive: 1.5,
+    thresholdDb: -60,
     ratio: 20,
-    limiterDb: -1,
-    presenceDb: 10,
-    lowShelfDb: 6,
-    highShelfDb: 8,
+    limiterDb: -0.1,
+    presenceDb: 24,
+    lowShelfDb: 14,
+    highShelfDb: 18,
     sustain: true,
-    sustainTargetDb: -6,
-    sustainMaxGain: 32,
+    sustainTargetDb: 5,
+    sustainMaxGain: 120,
     forceRawMic: true,
-    reverbEnabled: false,
+    reverbEnabled: true,
     reverbDelay: 0.045,
-    reverbFeedback: 0.12,
-    reverbWet: 0.04,
+    reverbFeedback: 0.35,
+    reverbWet: 0.18,
     keepAlive: true,
-    keepAliveGain: 0.00012,
+    keepAliveGain: 0.0012,
     senderRefreshMs: 1000
   }
 };
+
 const ids = Object.keys(DEFAULTS).filter((id) => id !== 'profileVersion');
 
 function storageGet(key) {
@@ -135,12 +138,16 @@ function updateLabels() {
     const el = document.getElementById(id);
     const label = document.getElementById(`${id}Val`);
     if (!label || el?.type === 'checkbox') return;
-    label.textContent = id === 'gainDb' ? `${numberText(el.value)} dB / ${multiplierFromGainDb(el.value)}x` : numberText(el.value);
+    label.textContent = id === 'gainDb' 
+      ? `${numberText(el.value)} dB / ${multiplierFromGainDb(el.value)}x` 
+      : numberText(el.value);
   });
 }
 
 function presetMatches(config, preset) {
-  return Object.entries(preset).every(([key, value]) => Number(config[key]) === Number(value) || config[key] === value);
+  return Object.entries(preset).every(([key, value]) => 
+    Number(config[key]) === Number(value) || config[key] === value
+  );
 }
 
 function activePreset(config) {
@@ -184,10 +191,25 @@ async function saveConfig(config) {
   applyToControls(merged);
 }
 
+let pendingConfig = null;
+let saveTimer = null;
+
+function scheduleSave(config) {
+  pendingConfig = { ...DEFAULTS, ...config };
+  applyToControls(pendingConfig);
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const next = pendingConfig;
+    pendingConfig = null;
+    saveTimer = null;
+    await storageSet({ micMaximizerConfig: next });
+  }, 120);
+}
+
 async function onControlInput(id, el) {
-  const merged = await readConfig();
+  const merged = pendingConfig || await readConfig();
   merged[id] = el.type === 'checkbox' ? el.checked : Number(el.value);
-  await saveConfig(merged);
+  scheduleSave(merged);
 }
 
 async function init() {
@@ -209,10 +231,10 @@ async function refreshHookStatus() {
     const status = await sendMessage({ type: 'MICMAX_STATUS_REQUEST' });
     const ageMs = status?.lastHeartbeat ? Date.now() - status.lastHeartbeat : Infinity;
     if (status?.ok && ageMs < 12000) {
-      el.textContent = 'Hook status: ACTIVE on Facebook/Messenger';
+      el.textContent = 'Hook status: ACTIVE on Facebook/Messenger/Instagram';
       el.className = 'status ok';
     } else {
-      el.textContent = 'Hook status: waiting — open or reload Facebook/Messenger Web';
+      el.textContent = 'Hook status: waiting — open or reload Facebook/Messenger/Instagram Web';
       el.className = 'status warn';
     }
   } catch (_) {
