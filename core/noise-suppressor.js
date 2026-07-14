@@ -29,6 +29,8 @@ class NoiseSuppressor {
     
     this.noiseProfile = null;
     this.noiseEstimate = new Uint8Array(128);
+    this.frequencyData = new Uint8Array(Math.max(1, this.analyser?.frequencyBinCount || 128));
+    this.processedSpectrum = new Uint8Array(this.frequencyData.length);
     this.calibrationCount = 0;
     this.calibrationTarget = 30; // Calibrate with first 30 frames of silence
   }
@@ -85,7 +87,10 @@ class NoiseSuppressor {
   subtractNoise(frequencyData) {
     if (!this.noiseProfile || !frequencyData) return frequencyData;
     
-    const processed = new Uint8Array(frequencyData.length);
+    if (this.processedSpectrum.length !== frequencyData.length) {
+      this.processedSpectrum = new Uint8Array(frequencyData.length);
+    }
+    const processed = this.processedSpectrum;
     const noiseReductionFactor = 0.85; // How much noise to remove (0-1)
     
     for (let i = 0; i < frequencyData.length; i++) {
@@ -116,7 +121,10 @@ class NoiseSuppressor {
 
   // Main processing function
   process() {
-    const data = new Uint8Array(this.analyser.frequencyBinCount);
+    if (this.frequencyData.length !== this.analyser.frequencyBinCount) {
+      this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
+    }
+    const data = this.frequencyData;
     this.analyser.getByteFrequencyData(data);
     
     // Step 1: Calibrate noise profile if needed

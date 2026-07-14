@@ -317,6 +317,13 @@
     outAudioTracks.forEach((track) => {
       state.processedTracks.add(track);
       state.processedMeta.set(track, { source: stream, pipeline });
+      const originalStop = track.stop?.bind(track);
+      if (originalStop && !track.__micMaxStopPatched) {
+        track.stop = () => {
+          try { originalStop(); } finally { stop(); }
+        };
+        track.__micMaxStopPatched = true;
+      }
     });
 
     const out = new MediaStream([
@@ -417,7 +424,10 @@
   function normalizeConstraints(constraints) {
     if (!constraints) return { audio: true };
     const next = { ...constraints };
-    if (cfg().forceRawMic && typeof next.audio === 'object') next.audio = rawMicAudioConstraints(next.audio);
+    if (cfg().forceRawMic) {
+      if (next.audio === true) next.audio = rawMicAudioConstraints({});
+      else if (typeof next.audio === 'object' && next.audio) next.audio = rawMicAudioConstraints(next.audio);
+    }
     return next;
   }
 
@@ -772,8 +782,9 @@
       if (typeof originalSetRemoteDescription === 'function') {
         PC.prototype.setRemoteDescription = function setRemoteDescription(desc) {
           rememberPeerConnection(this);
-          const patched = cloneDescriptionWithSdp(desc, enhanceAudioSdp(desc?.sdp));
-          const result = originalSetRemoteDescription.call(this, patched);
+          // Remote SDP belongs to the calling service. Munging it can break offer/answer
+          // compatibility on Messenger, Facebook, and Instagram, so only local SDP is tuned.
+          const result = originalSetRemoteDescription.call(this, desc);
           Promise.resolve(result).then(scheduleRecoveryPasses).catch(() => {});
           return result;
         };
@@ -811,9 +822,11 @@
   }
 
   async function getStreamWithFallback(orig, constraints, ctx) {
+    const normalized = normalizeConstraints(constraints);
     try {
-      return await orig.call(ctx, normalizeConstraints(constraints));
-    } catch (_) {
+      return await orig.call(ctx, normalized);
+    } catch (firstError) {
+      if (normalized === constraints) throw firstError;
       return orig.call(ctx, constraints);
     }
   }
@@ -821,10 +834,29 @@
   async function wrapped(orig, constraints, ctx) {
     if (wantsAudio(constraints)) state.lastAudioConstraints = constraints || { audio: true };
     if (!cfg().enabled) return orig.call(ctx, constraints);
-    return getStreamWithFallback(orig, constraints, ctx).then((stream) => {
-      if (!stream || !stream.getAudioTracks().length) return stream;
-      return build(stream, state.config);
-    });
+    const stream = await getStreamWithFallback(orig, constraints, ctx);
+    if (!stream || !stream.getAudioTracks().length) return stream;
+    return build(stream, state.config);
+  }
+
+  function legacyGetUserMedia(orig, constraints, ok, fail, ctx) {
+    const normalized = cfg().enabled ? normalizeConstraints(constraints) : constraints;
+    const onSuccess = (stream) => {
+      try {
+        ok(cfg().enabled && stream?.getAudioTracks?.().length ? build(stream, state.config) : stream);
+      } catch (err) {
+        if (fail) fail(err);
+      }
+    };
+    try {
+      orig.call(ctx, normalized, onSuccess, (err) => {
+        if (normalized !== constraints) {
+          try { orig.call(ctx, constraints, onSuccess, fail); } catch (fallbackErr) { if (fail) fail(fallbackErr); }
+        } else if (fail) fail(err);
+      });
+    } catch (err) {
+      if (fail) fail(err);
+    }
   }
 
   // Main hooks
@@ -838,7 +870,7 @@
   if (navigator.getUserMedia) {
     state.origLegacy = navigator.getUserMedia.bind(navigator);
     navigator.getUserMedia = (constraints, ok, fail) => {
-      wrapped(state.origLegacy, constraints, navigator).then(ok).catch((err) => fail && fail(err));
+      legacyGetUserMedia(state.origLegacy, constraints, ok, fail, navigator);
     };
   }
 
